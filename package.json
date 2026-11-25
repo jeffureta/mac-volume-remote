@@ -1,0 +1,29 @@
+{
+  "name": "mac-volume-remote",
+  "version": "1.0.0",
+  "description": "Control macOS system audio from your iPhone via a fast PWA remote",
+  "type": "module",
+  "bin": {
+    "volremote": "./dist/cli.js"
+  },
+  "scripts": {
+    "build:swift": "mkdir -p bin && swiftc -O swift/AudioBridge.swift -o bin/audio-bridge",
+    "build:client": "esbuild src/client/app.ts --bundle --format=esm --minify --outfile=public/app.js",
+    "build:server": "tsc -p tsconfig.server.json",
+    "build": "npm run build:swift && npm run build:client && npm run build:server",
+    "test": "vitest run --bail 1",
+    "start": "node dist/cli.js start"
+  },
+  "dependencies": {
+    "qrcode-terminal": "^0.12.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.1",
+    "@types/qrcode-terminal": "^0.12.2",
+    "@types/ws": "^8.5.13",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

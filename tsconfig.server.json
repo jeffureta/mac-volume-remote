@@ -1,0 +1,7 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false
+  },
+  "include": ["src/server/**/*", "src/shared/**/*", "src/auth/**/*", "src/audio/**/*", "src/network/**/*", "src/service/**/*", "src/cli.ts"]
+}
