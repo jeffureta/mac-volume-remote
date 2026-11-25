@@ -1,0 +1,254 @@
+import Foundation
+import CoreAudio
+import AudioToolbox
+
+struct AudioPayload: Codable {
+    let type: String
+    let volume: Int
+    let muted: boolean_t?
+    let isMuted: Bool
+    let device: String
+}
+
+final class CoreAudioController {
+    static let shared = CoreAudioController()
+    
+    private var defaultOutputDeviceID: AudioDeviceID = 0
+    private var isListening = false
+    
+    private init() {
+        refreshDefaultDevice()
+    }
+    
+    func refreshDefaultDevice() {
+        var deviceID = AudioDeviceID(0)
+        var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        
+        let status = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &propertyAddress,
+            0,
+            nil,
+            &propertySize,
+            &deviceID
+        )
+        
+        if status == noErr {
+            self.defaultOutputDeviceID = deviceID
+        }
+    }
+    
+    func getDeviceName() -> String {
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceNameCFString,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var nameCF: CFString = "" as CFString
+        var propertySize = UInt32(MemoryLayout<CFString>.size)
+        
+        let status = withUnsafeMutablePointer(to: &nameCF) { ptr in
+            AudioObjectGetPropertyData(
+                defaultOutputDeviceID,
+                &propertyAddress,
+                0,
+                nil,
+                &propertySize,
+                ptr
+            )
+        }
+        
+        if status == noErr {
+            return nameCF as String
+        }
+        return "Default Audio Output"
+    }
+    
+    func getVolume() -> Int {
+        var volume: Float32 = 0.0
+        var propertySize = UInt32(MemoryLayout<Float32>.size)
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwareServiceDeviceProperty_VirtualMainVolume,
+            mScope: kAudioObjectPropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        
+        let status = AudioObjectGetPropertyData(
+            defaultOutputDeviceID,
+            &propertyAddress,
+            0,
+            nil,
+            &propertySize,
+            &volume
+        )
+        
+        if status == noErr {
+            return Int(round(volume * 100.0))
+        }
+        return 0
+    }
+    
+    func setVolume(_ volumePercent: Int) {
+        var volume = Float32(max(0, min(100, volumePercent))) / 100.0
+        let propertySize = UInt32(MemoryLayout<Float32>.size)
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwareServiceDeviceProperty_VirtualMainVolume,
+            mScope: kAudioObjectPropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        
+        _ = AudioObjectSetPropertyData(
+            defaultOutputDeviceID,
+            &propertyAddress,
+            0,
+            nil,
+            propertySize,
+            &volume
+        )
+    }
+    
+    func isMuted() -> Bool {
+        var muted: UInt32 = 0
+        var propertySize = UInt32(MemoryLayout<UInt32>.size)
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyMute,
+            mScope: kAudioObjectPropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        
+        let status = AudioObjectGetPropertyData(
+            defaultOutputDeviceID,
+            &propertyAddress,
+            0,
+            nil,
+            &propertySize,
+            &muted
+        )
+        
+        if status == noErr {
+            return muted != 0
+        }
+        return false
+    }
+    
+    func setMuted(_ mute: Bool) {
+        var muted: UInt32 = mute ? 1 : 0
+        let propertySize = UInt32(MemoryLayout<UInt32>.size)
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyMute,
+            mScope: kAudioObjectPropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        
+        _ = AudioObjectSetPropertyData(
+            defaultOutputDeviceID,
+            &propertyAddress,
+            0,
+            nil,
+            propertySize,
+            &muted
+        )
+    }
+    
+    func emitState() {
+        let vol = getVolume()
+        let mute = isMuted()
+        let device = getDeviceName()
+        let json = "{\"type\":\"state\",\"volume\":\(vol),\"muted\":\(mute),\"device\":\"\(device)\"}\n"
+        FileHandle.standardOutput.write(json.data(using: .utf8)!)
+    }
+    
+    func startObserving() {
+        guard !isListening else { return }
+        isListening = true
+        
+        // Listen to default device changes
+        var defaultDeviceAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        
+        AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &defaultDeviceAddress, DispatchQueue.main) { _, _ in
+            CoreAudioController.shared.refreshDefaultDevice()
+            CoreAudioController.shared.bindDeviceListeners()
+            CoreAudioController.shared.emitState()
+        }
+        
+        bindDeviceListeners()
+    }
+    
+    private func bindDeviceListeners() {
+        var volumeAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwareServiceDeviceProperty_VirtualMainVolume,
+            mScope: kAudioObjectPropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        
+        var muteAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyMute,
+            mScope: kAudioObjectPropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        
+        AudioObjectAddPropertyListenerBlock(defaultOutputDeviceID, &volumeAddress, DispatchQueue.main) { _, _ in
+            CoreAudioController.shared.emitState()
+        }
+        
+        AudioObjectAddPropertyListenerBlock(defaultOutputDeviceID, &muteAddress, DispatchQueue.main) { _, _ in
+            CoreAudioController.shared.emitState()
+        }
+    }
+}
+
+// Check arguments or stdin loop
+let args = CommandLine.arguments
+if args.contains("--get") {
+    CoreAudioController.shared.emitState()
+    exit(0)
+}
+
+CoreAudioController.shared.startObserving()
+CoreAudioController.shared.emitState()
+
+// Read stdin NDJSON commands asynchronously
+let inputPipe = Pipe()
+let stdIn = FileHandle.standardInput
+
+DispatchQueue.global(qos: .userInitiated).async {
+    while true {
+        let data = stdIn.availableData
+        guard !data.isEmpty else {
+            exit(0)
+        }
+        if let line = String(data: data, encoding: .utf8) {
+            let lines = line.split(separator: "\n")
+            for single in lines {
+                let trimmed = single.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { continue }
+                if let jsonData = trimmed.data(using: .utf8),
+                   let dict = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+                   let cmd = dict["cmd"] as? String {
+                    DispatchQueue.main.async {
+                        if cmd == "get" {
+                            CoreAudioController.shared.emitState()
+                        } else if cmd == "setVolume", let vol = dict["volume"] as? Int {
+                            CoreAudioController.shared.setVolume(vol)
+                            CoreAudioController.shared.emitState()
+                        } else if cmd == "setMuted", let m = dict["muted"] as? Bool {
+                            CoreAudioController.shared.setMuted(m)
+                            CoreAudioController.shared.emitState()
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+RunLoop.main.run()
