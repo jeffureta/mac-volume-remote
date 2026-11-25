@@ -48,14 +48,19 @@ describe("RemoteController (Client state, pillar math, echo guard)", () => {
     expect(controller.getCurrentDisplayVolume()).toBe(75);
   });
 
-  it("dispatches step and preset commands", () => {
-    controller.stepVolume(5);
-    expect(sentCommands[0]).toEqual({ type: "adjustVolume", delta: 5 });
+  it("tracks whether authoritative server state has synced and supports requestSync", () => {
+    expect(controller.hasSyncedState()).toBe(false);
 
-    controller.setPreset(25);
-    expect(sentCommands[1]).toEqual({ type: "setVolume", volume: 25 });
+    controller.requestSync();
+    expect(sentCommands).toEqual([{ type: "getState" }]);
 
+    controller.applyServerState({ volume: 64, muted: false, outputDevice: "Speakers" });
+    expect(controller.hasSyncedState()).toBe(true);
+    expect(controller.getCurrentDisplayVolume()).toBe(64);
+  });
+
+  it("dispatches toggleMute command", () => {
     controller.toggleMute();
-    expect(sentCommands[2]).toEqual({ type: "toggleMute" });
+    expect(sentCommands[0]).toEqual({ type: "toggleMute" });
   });
 });

@@ -7,21 +7,23 @@ import { AudioState, VolumePercent, clampVolume } from "../shared/protocol.js";
 
 export interface CoreAudioDriverOptions {
   bridgePath?: string;
+  initialState?: Partial<AudioState>;
 }
 
 export class CoreAudioDriver implements AudioDriver {
   private bridgePath: string;
   private process: ChildProcessWithoutNullStreams | null = null;
-  private currentState: AudioState = {
-    volume: 50,
-    muted: false,
-    outputDevice: "macOS Audio"
-  };
+  private currentState: AudioState;
   private listeners: Set<AudioStateListener> = new Set();
   private pendingResolvers: Array<(state: AudioState) => void> = [];
 
   constructor(options: CoreAudioDriverOptions = {}) {
     this.bridgePath = options.bridgePath ?? path.resolve("bin/audio-bridge");
+    this.currentState = {
+      volume: clampVolume(options.initialState?.volume ?? 50),
+      muted: Boolean(options.initialState?.muted ?? false),
+      outputDevice: String(options.initialState?.outputDevice || "macOS Audio")
+    };
     this.spawnBridge();
   }
 
@@ -73,9 +75,24 @@ export class CoreAudioDriver implements AudioDriver {
       return { ...this.currentState };
     }
     return new Promise(resolve => {
-      this.pendingResolvers.push(resolve);
+      let settled = false;
+      const wrappedResolve = (state: AudioState) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(state);
+      };
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        const idx = this.pendingResolvers.indexOf(wrappedResolve);
+        if (idx !== -1) {
+          this.pendingResolvers.splice(idx, 1);
+        }
+        resolve({ ...this.currentState });
+      }, 250);
+      this.pendingResolvers.push(wrappedResolve);
       this.sendCommand({ cmd: "get" });
-      setTimeout(() => resolve({ ...this.currentState }), 250);
     });
   }
 

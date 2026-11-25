@@ -159,8 +159,17 @@ final class CoreAudioController {
         let vol = getVolume()
         let mute = isMuted()
         let device = getDeviceName()
-        let json = "{\"type\":\"state\",\"volume\":\(vol),\"muted\":\(mute),\"device\":\"\(device)\"}\n"
-        FileHandle.standardOutput.write(json.data(using: .utf8)!)
+        let payload: [String: Any] = [
+            "type": "state",
+            "volume": vol,
+            "muted": mute,
+            "device": device
+        ]
+        if let jsonData = try? JSONSerialization.data(withJSONObject: payload),
+           var lineData = String(data: jsonData, encoding: .utf8)?.data(using: .utf8) {
+            lineData.append(0x0A)
+            FileHandle.standardOutput.write(lineData)
+        }
     }
     
     func startObserving() {

@@ -6,10 +6,12 @@ import { AudioDriver } from "../audio/audio-driver.js";
 import { PairingAuthService, AuthResult } from "../auth/pairing-auth.js";
 import { parseClientCommand, ServerMessage, AudioState } from "../shared/protocol.js";
 import { resolvePackagePath } from "../shared/paths.js";
+import { VolumeMemoryStore } from "../state/volume-memory-store.js";
 
 export interface AppServerOptions {
   authService: PairingAuthService;
   audioDriver: AudioDriver;
+  volumeMemoryStore?: VolumeMemoryStore;
   hostName: string;
   port?: number;
   publicDir?: string;
@@ -18,6 +20,7 @@ export interface AppServerOptions {
 export class AppServer {
   private authService: PairingAuthService;
   private audioDriver: AudioDriver;
+  private volumeMemoryStore?: VolumeMemoryStore;
   private hostName: string;
   private port: number;
   private publicDir: string;
@@ -26,10 +29,12 @@ export class AppServer {
   private connectedSockets: Set<WebSocket> = new Set();
   private unsubscribeDriver?: () => void;
   private startTime: number = Date.now();
+  private lastKnownUpdatedAt: string = new Date().toISOString();
 
   constructor(options: AppServerOptions) {
     this.authService = options.authService;
     this.audioDriver = options.audioDriver;
+    this.volumeMemoryStore = options.volumeMemoryStore;
     this.hostName = options.hostName;
     this.port = options.port ?? 4818;
     this.publicDir = options.publicDir ?? resolvePackagePath("public");
@@ -74,18 +79,26 @@ export class AppServer {
                 this.sendToSocket(ws, { type: "state", state, hostName: this.hostName });
                 break;
               }
-              case "setVolume":
-                await this.audioDriver.setVolume(cmd.volume);
+              case "setVolume": {
+                const state = await this.audioDriver.setVolume(cmd.volume);
+                this.persistState(state);
                 break;
-              case "adjustVolume":
-                await this.audioDriver.adjustVolume(cmd.delta);
+              }
+              case "adjustVolume": {
+                const state = await this.audioDriver.adjustVolume(cmd.delta);
+                this.persistState(state);
                 break;
-              case "setMuted":
-                await this.audioDriver.setMuted(cmd.muted);
+              }
+              case "setMuted": {
+                const state = await this.audioDriver.setMuted(cmd.muted);
+                this.persistState(state);
                 break;
-              case "toggleMute":
-                await this.audioDriver.toggleMute();
+              }
+              case "toggleMute": {
+                const state = await this.audioDriver.toggleMute();
+                this.persistState(state);
                 break;
+              }
             }
           } catch {
             // ignore
@@ -98,6 +111,7 @@ export class AppServer {
       });
 
       this.unsubscribeDriver = this.audioDriver.onStateChange((state) => {
+        this.persistState(state);
         this.broadcastState(state);
       });
 
@@ -171,11 +185,7 @@ export class AppServer {
 
     // Auth verify endpoint
     if (req.method === "GET" && parsedUrl.pathname === "/api/auth/verify") {
-      let token = parsedUrl.searchParams.get("token") || "";
-      const authHeader = req.headers.authorization;
-      if (authHeader && authHeader.startsWith("Bearer ")) {
-        token = authHeader.substring(7).trim();
-      }
+      const token = this.extractToken(req, parsedUrl);
 
       if (token && this.authService.validateSessionToken(token)) {
         res.writeHead(200, { "Content-Type": "application/json" });
@@ -188,6 +198,45 @@ export class AppServer {
           error: "Session token expired or revoked. Please re-enter the 4-digit PIN."
         }));
       }
+      return;
+    }
+
+    // Current audio state sync endpoint (for instant cross-iPhone & wake resync)
+    if (req.method === "GET" && parsedUrl.pathname === "/api/state") {
+      const token = this.extractToken(req, parsedUrl);
+
+      if (!token || !this.authService.validateSessionToken(token)) {
+        res.writeHead(401, {
+          "Content-Type": "application/json",
+          "Cache-Control": "no-store"
+        });
+        res.end(JSON.stringify({
+          code: "E_AUTH_EXPIRED",
+          error: "Session token expired or revoked. Please re-enter the 4-digit PIN."
+        }));
+        return;
+      }
+
+      this.audioDriver.getState().then((state) => {
+        res.writeHead(200, {
+          "Content-Type": "application/json",
+          "Cache-Control": "no-store"
+        });
+        res.end(JSON.stringify({
+          state,
+          hostName: this.hostName,
+          updatedAt: this.lastKnownUpdatedAt
+        }));
+      }).catch(() => {
+        res.writeHead(500, {
+          "Content-Type": "application/json",
+          "Cache-Control": "no-store"
+        });
+        res.end(JSON.stringify({
+          code: "E_RUNTIME_ERROR",
+          error: "Failed to read audio state."
+        }));
+      });
       return;
     }
 
@@ -242,9 +291,17 @@ export class AppServer {
           ".css": "text/css; charset=utf-8",
           ".js": "application/javascript; charset=utf-8",
           ".svg": "image/svg+xml",
+          ".png": "image/png",
+          ".ico": "image/x-icon",
           ".webmanifest": "application/manifest+json"
         };
-        res.writeHead(200, { "Content-Type": mimeTypes[ext] || "application/octet-stream" });
+        const headers: Record<string, string> = {
+          "Content-Type": mimeTypes[ext] || "application/octet-stream"
+        };
+        if (ext === ".html" || ext === ".js" || ext === ".css" || ext === ".webmanifest") {
+          headers["Cache-Control"] = "no-cache";
+        }
+        res.writeHead(200, headers);
         fs.createReadStream(safePath).pipe(res);
         return;
       }
@@ -267,6 +324,24 @@ export class AppServer {
 
     res.writeHead(404, { "Content-Type": "text/plain" });
     res.end("Not Found");
+  }
+
+  private extractToken(req: http.IncomingMessage, parsedUrl: URL): string {
+    let token = parsedUrl.searchParams.get("token") || "";
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith("Bearer ")) {
+      token = authHeader.substring(7).trim();
+    }
+    return token;
+  }
+
+  private persistState(state: AudioState) {
+    if (this.volumeMemoryStore) {
+      const saved = this.volumeMemoryStore.save(state);
+      this.lastKnownUpdatedAt = saved.updatedAt;
+    } else {
+      this.lastKnownUpdatedAt = new Date().toISOString();
+    }
   }
 
   private broadcastState(state: AudioState) {

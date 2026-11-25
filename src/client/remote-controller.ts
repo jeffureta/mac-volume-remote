@@ -23,6 +23,7 @@ export class RemoteController {
   
   private dragVolume: VolumePercent = 50;
   private isDragging: boolean = false;
+  private hasSynced: boolean = false;
 
   constructor(options: RemoteControllerOptions) {
     this.sendCommand = options.sendCommand;
@@ -36,7 +37,16 @@ export class RemoteController {
     return clampVolume(ratio * 100);
   }
 
+  public hasSyncedState(): boolean {
+    return this.hasSynced;
+  }
+
+  public requestSync() {
+    this.sendCommand({ type: "getState" });
+  }
+
   public applyServerState(state: AudioState) {
+    this.hasSynced = true;
     this.authoritativeState = { ...state };
     if (!this.isDragging) {
       this.dragVolume = state.volume;
@@ -70,15 +80,6 @@ export class RemoteController {
   public endDrag() {
     this.isDragging = false;
     this.notifyUI();
-  }
-
-  public stepVolume(delta: number) {
-    this.sendCommand({ type: "adjustVolume", delta });
-  }
-
-  public setPreset(volume: VolumePercent) {
-    const clamped = clampVolume(volume);
-    this.sendCommand({ type: "setVolume", volume: clamped });
   }
 
   public toggleMute() {

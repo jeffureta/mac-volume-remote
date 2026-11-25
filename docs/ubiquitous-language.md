@@ -11,3 +11,7 @@
 - **DiagnosticReport**: Copy-pasteable structured plain-text summary with sensitive tokens redacted.
 - **LanSelection**: Host network interface resolution result prioritizing physical Wi-Fi/Ethernet (`en0`) over VPN virtual tunnels.
 - **VpnTunnelNotice**: Proactive warning surfaced when virtual tunnel interfaces are detected.
+- **VolumeMemoryStore**: Atomic on-disk JSON store (`volume-state.json`) persisting the latest macOS `AudioState` across server restarts and iPhone switches.
+- **PersistedVolumeState**: `AudioState` snapshot augmented with an ISO 8601 `updatedAt` timestamp.
+- **StateSyncEndpoint**: Authenticated `GET /api/state` (`Cache-Control: no-store`) endpoint used by mobile clients on boot and app wake to immediately pull authoritative volume state.
+- **HomeScreenIcon**: Opaque PNG icon assets (`apple-touch-icon.png` `180×180`, `icon-192.png`, `icon-512.png`) and `"Mac Volume"` manifest metadata for iOS Safari Add to Home Screen.
