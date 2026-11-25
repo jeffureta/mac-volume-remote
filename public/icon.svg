@@ -1,6 +1,17 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
-  <rect width="512" height="512" rx="128" fill="#111111"/>
-  <path d="M192 160 L128 224 L64 224 L64 288 L128 288 L192 352 Z" fill="#FFFFFF"/>
-  <path d="M256 176 A96 96 0 0 1 256 336" fill="none" stroke="#007AFF" stroke-width="32" stroke-linecap="round"/>
-  <path d="M320 128 A160 160 0 0 1 320 384" fill="none" stroke="#007AFF" stroke-width="32" stroke-linecap="round"/>
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#18181D"/>
+      <stop offset="100%" stop-color="#08080A"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="62%" cy="50%" r="40%">
+      <stop offset="0%" stop-color="#0A84FF" stop-opacity="0.22"/>
+      <stop offset="100%" stop-color="#0A84FF" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <rect width="512" height="512" rx="112" fill="url(#glow)"/>
+  <path d="M97 215 L148 215 L220 143 L235 143 L235 369 L220 369 L148 297 L97 297 Z" fill="#FFFFFF"/>
+  <path d="M308 204 A77 77 0 0 1 308 308" fill="none" stroke="#0A84FF" stroke-width="29" stroke-linecap="round"/>
+  <path d="M342 158 A133 133 0 0 1 342 354" fill="none" stroke="#0A84FF" stroke-width="29" stroke-linecap="round"/>
 </svg>

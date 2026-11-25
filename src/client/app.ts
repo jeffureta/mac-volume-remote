@@ -8,6 +8,10 @@ import {
 } from "./diagnostics.js";
 
 const TOKEN_KEY = "mac_volume_remote_token";
+const SPEAKER_ON_PATH =
+  "M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z";
+const SPEAKER_MUTED_PATH =
+  "M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z";
 
 class AppView {
   private ws: WebSocket | null = null;
@@ -15,12 +19,14 @@ class AppView {
   private token: string | null = null;
   private diagnostics = new DiagnosticsStore(15);
   private wsConnectTimeoutTimer?: any;
+  private wsWakeWatchdogTimer?: any;
   private wsStatusStr = "DISCONNECTED";
 
   // DOM elements
   private pillar = document.getElementById("pillar") as HTMLDivElement;
   private pillarFill = document.getElementById("pillarFill") as HTMLDivElement;
   private volumeText = document.getElementById("volumeText") as HTMLDivElement;
+  private pillarSpeakerPath = document.getElementById("pillarSpeakerPath") as SVGPathElement | null;
   private statusDot = document.getElementById("statusDot") as HTMLDivElement;
   private statusPill = document.getElementById("statusPill") as HTMLButtonElement;
   private hostLabel = document.getElementById("hostLabel") as HTMLSpanElement;
@@ -144,6 +150,7 @@ class AppView {
           this.safeSetStorage(TOKEN_KEY, data.token);
           this.diagnostics.recordEvent("auth", "Bootstrap token exchange successful");
           window.history.replaceState({}, document.title, window.location.pathname);
+          void this.syncStateFromHttp();
           this.connectWs();
           return;
         }
@@ -160,6 +167,47 @@ class AppView {
     this.token = this.safeGetStorage(TOKEN_KEY);
     if (!this.token) {
       this.showPairingModal();
+    } else {
+      void this.syncStateFromHttp();
+      this.connectWs();
+    }
+  }
+
+  private async syncStateFromHttp() {
+    if (!this.token) return;
+    try {
+      const res = await fetch("/api/state", {
+        headers: { Authorization: `Bearer ${this.token}` },
+        cache: "no-store"
+      });
+      if (res.status === 401) {
+        this.handleAuthRevocation();
+        return;
+      }
+      if (!res.ok) return;
+      const msg = await res.json();
+      if (msg && msg.state) {
+        this.hostLabel.textContent = msg.hostName || "Mac Remote";
+        this.deviceBadge.textContent = msg.state.outputDevice || "Speakers";
+        this.controller.applyServerState(msg.state);
+      }
+    } catch {
+      // WebSocket or reconnect handler will surface connectivity banner if offline
+    }
+  }
+
+  private handleAppResume(source: string) {
+    if (!this.token) return;
+    this.diagnostics.recordEvent("lifecycle", `Resume resync (${source})`);
+    void this.syncStateFromHttp();
+
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      clearTimeout(this.wsWakeWatchdogTimer);
+      this.controller.requestSync();
+      this.wsWakeWatchdogTimer = setTimeout(() => {
+        this.diagnostics.recordEvent("ws", "Wake sync watchdog triggered; reconnecting WebSocket");
+        this.connectWs();
+      }, 2000);
     } else {
       this.connectWs();
     }
@@ -213,6 +261,7 @@ class AppView {
       try {
         const msg = JSON.parse(event.data);
         if (msg.type === "state") {
+          clearTimeout(this.wsWakeWatchdogTimer);
           this.hostLabel.textContent = msg.hostName || "Mac Remote";
           this.deviceBadge.textContent = msg.state.outputDevice || "Speakers";
           this.controller.applyServerState(msg.state);
@@ -224,6 +273,7 @@ class AppView {
 
     this.ws.onclose = async (event) => {
       clearTimeout(this.wsConnectTimeoutTimer);
+      clearTimeout(this.wsWakeWatchdogTimer);
       this.wsStatusStr = `CLOSED (${event.code})`;
       this.statusDot.classList.remove("connected");
       this.hostLabel.textContent = "Disconnected";
@@ -260,17 +310,23 @@ class AppView {
   }
 
   private render(state: AudioState) {
+    this.pillar.classList.remove("syncing");
+    this.pillar.setAttribute("aria-valuenow", String(state.volume));
     this.volumeText.textContent = `${state.volume}%`;
     this.pillarFill.style.height = `${state.volume}%`;
 
     if (state.muted) {
       this.pillar.classList.add("muted");
       this.muteBtn.classList.add("active");
+      this.muteBtn.setAttribute("aria-pressed", "true");
       this.muteBtn.textContent = "Unmute";
+      this.pillarSpeakerPath?.setAttribute("d", SPEAKER_MUTED_PATH);
     } else {
       this.pillar.classList.remove("muted");
       this.muteBtn.classList.remove("active");
+      this.muteBtn.setAttribute("aria-pressed", "false");
       this.muteBtn.textContent = "Mute";
+      this.pillarSpeakerPath?.setAttribute("d", SPEAKER_ON_PATH);
     }
   }
 
@@ -316,18 +372,19 @@ class AppView {
       this.showPairingModal("Saved credentials cleared. Enter PIN to reconnect.");
     });
 
-    // Visibility change auto-reconnect
+    // Lifecycle resume auto-resync across iPhone switches & iOS background wake
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible") {
-        this.diagnostics.recordEvent("lifecycle", "Page became visible (wake)");
-        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-          this.connectWs();
-        }
+        this.handleAppResume("visibilitychange");
       }
     });
+    window.addEventListener("pageshow", () => this.handleAppResume("pageshow"));
+    window.addEventListener("focus", () => this.handleAppResume("focus"));
+    window.addEventListener("online", () => this.handleAppResume("online"));
 
     // Pointer drag on pillar
     this.pillar.addEventListener("pointerdown", (e) => {
+      this.pillar.classList.add("dragging");
       this.pillar.setPointerCapture(e.pointerId);
       const rect = this.pillar.getBoundingClientRect();
       const vol = this.controller.calculateVolumeFromPointerY(e.clientY, rect);
@@ -345,6 +402,7 @@ class AppView {
     const releasePointer = (e: PointerEvent) => {
       if (this.pillar.hasPointerCapture(e.pointerId)) {
         this.pillar.releasePointerCapture(e.pointerId);
+        this.pillar.classList.remove("dragging");
         this.controller.endDrag();
       }
     };
@@ -352,18 +410,6 @@ class AppView {
     this.pillar.addEventListener("pointercancel", releasePointer);
 
     // Controls
-    document.getElementById("stepDown5")?.addEventListener("click", () => this.controller.stepVolume(-5));
-    document.getElementById("stepDown1")?.addEventListener("click", () => this.controller.stepVolume(-1));
-    document.getElementById("stepUp1")?.addEventListener("click", () => this.controller.stepVolume(1));
-    document.getElementById("stepUp5")?.addEventListener("click", () => this.controller.stepVolume(5));
-
-    document.querySelectorAll(".preset-btn").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const vol = parseInt(btn.getAttribute("data-vol") || "50", 10);
-        this.controller.setPreset(vol);
-      });
-    });
-
     this.muteBtn.addEventListener("click", () => this.controller.toggleMute());
 
     // PIN inputs
@@ -400,6 +446,7 @@ class AppView {
           this.safeSetStorage(TOKEN_KEY, data.token);
           this.pairingModal.style.display = "none";
           this.submitPinBtn.textContent = "Connect";
+          void this.syncStateFromHttp();
           this.connectWs();
         } else {
           const errData = await res.json().catch(() => ({}));

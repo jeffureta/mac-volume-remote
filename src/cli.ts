@@ -7,6 +7,7 @@ import { PairingAuthService } from "./auth/pairing-auth.js";
 import { getLanInfo } from "./network/lan-info.js";
 import { installLaunchAgent, uninstallLaunchAgent, DEFAULT_SERVICE_LABEL } from "./service/launchd.js";
 import { resolvePackagePath } from "./shared/paths.js";
+import { VolumeMemoryStore } from "./state/volume-memory-store.js";
 
 const args = process.argv.slice(2);
 const command = args[0] || "start";
@@ -65,13 +66,16 @@ async function main() {
 
   if (command === "start") {
     const creds = authService.getCredentials();
+    const volumeMemoryStore = new VolumeMemoryStore();
+    const rememberedState = volumeMemoryStore.load() ?? undefined;
     const bridgePath = resolvePackagePath("bin", "audio-bridge");
-    const audioDriver = new CoreAudioDriver({ bridgePath });
+    const audioDriver = new CoreAudioDriver({ bridgePath, initialState: rememberedState });
     const lan = getLanInfo(port, creds.bootstrapToken, { overrideHost });
 
     const server = new AppServer({
       authService,
       audioDriver,
+      volumeMemoryStore,
       hostName: lan.localHostName,
       port,
       publicDir: resolvePackagePath("public")

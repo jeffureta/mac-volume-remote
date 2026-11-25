@@ -6,7 +6,9 @@ Control your Mac's system volume and mute state in real-time from your iPhone vi
 - **Sub-1ms Responsiveness**: Powered by a native Swift 6.4 `CoreAudio` helper subscribing to hardware volume changes.
 - **2-Way Real-time Sync**: Physical Mac keyboard volume presses and AirPods connections reflect immediately on the iPhone screen without polling.
 - **Echo Suppression**: Smooth touch scrubbing with optimistic local dragging that avoids jitter from in-flight server echoes.
-- **OLED Control-Center Design**: Giant vertical pillar slider, tactile fine steps (`-5%`, `-1%`, `+1%`, `+5%`), quick presets (`25%`, `50%`, `75%`, `100%`), and Mute toggle.
+- **OLED Control-Center Design**: Clean, mobile-first vertical pillar slider and tactile Mute pill tailored for both **iPhone 15 Pro** and **iPhone SE (2022)** with locked viewport, safe-area insets, and zero bounce.
+- **Cross-iPhone Volume Memory**: Persists the latest volume state on your Mac (`~/.config/mac-volume-remote/volume-state.json`) and instantly syncs via `GET /api/state` + wake watchdog when switching between iPhones or restarting the server.
+- **Native iOS Home Screen Icon**: Includes opaque PNG `apple-touch-icon.png` (`180×180`), `192×192`, and `512×512` icons labeled **Mac Volume** for Safari **Add to Home Screen**.
 - **Zero-Friction Safari / PWA Pairing**: Instant QR bootstrap URL or 4-digit PIN exchange saved to `localStorage`.
 - **Resource Conscious**: ~20MB RAM, 0% idle CPU on Apple Silicon (tested on M1 MacBook Air).
 - **Background Auto-Start**: Includes optional `launchd` service integration.
