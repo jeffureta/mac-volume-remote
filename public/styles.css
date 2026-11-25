@@ -1,0 +1,235 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+body {
+  background-color: #000000;
+  color: #ffffff;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", Helvetica, Arial, sans-serif;
+  height: 100vh;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: env(safe-area-inset-top, 20px) 20px env(safe-area-inset-bottom, 20px) 20px;
+}
+
+/* Header */
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0 12px 0;
+}
+
+.status-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #1c1c1e;
+  padding: 6px 14px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #a1a1a6;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ff453a;
+}
+
+.status-dot.connected {
+  background: #30d158;
+}
+
+.device-badge {
+  font-size: 12px;
+  color: #8e8e93;
+  max-width: 150px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Main Pillar Viewport */
+main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  min-height: 0;
+}
+
+.pillar-container {
+  width: 100%;
+  max-width: 320px;
+  flex: 1;
+  background: #1c1c1e;
+  border-radius: 40px;
+  position: relative;
+  overflow: hidden;
+  touch-action: none;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.6), inset 0 0 0 1px rgba(255,255,255,0.08);
+}
+
+.pillar-fill {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 50%;
+  background: #ffffff;
+  transition: height 0.05s linear;
+  pointer-events: none;
+}
+
+.pillar-container.muted .pillar-fill {
+  background: #ff453a;
+  opacity: 0.6;
+}
+
+.pillar-label {
+  position: absolute;
+  top: 24px;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 42px;
+  font-weight: 700;
+  letter-spacing: -1px;
+  mix-blend-mode: difference;
+  pointer-events: none;
+}
+
+.pillar-icon {
+  position: absolute;
+  bottom: 24px;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  mix-blend-mode: difference;
+  pointer-events: none;
+}
+
+.pillar-icon svg {
+  width: 36px;
+  height: 36px;
+  fill: #ffffff;
+}
+
+/* Control Decks */
+.controls-deck {
+  width: 100%;
+  max-width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.btn-row {
+  display: flex;
+  gap: 8px;
+}
+
+button {
+  border: none;
+  background: #1c1c1e;
+  color: #ffffff;
+  font-size: 16px;
+  font-weight: 600;
+  border-radius: 16px;
+  padding: 14px 0;
+  flex: 1;
+  cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08);
+  transition: background 0.1s, transform 0.05s;
+}
+
+button:active {
+  background: #2c2c2e;
+  transform: scale(0.97);
+}
+
+.preset-btn {
+  font-size: 14px;
+  color: #a1a1a6;
+}
+
+.mute-btn {
+  background: #2c2c2e;
+  font-size: 17px;
+  padding: 16px 0;
+}
+
+.mute-btn.active {
+  background: #ff453a;
+  color: #ffffff;
+}
+
+/* Pairing Modal */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.9);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 100;
+}
+
+.modal-card {
+  background: #1c1c1e;
+  border-radius: 28px;
+  padding: 32px 24px;
+  width: 100%;
+  max-width: 320px;
+  text-align: center;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.8);
+}
+
+.modal-card h2 {
+  font-size: 22px;
+  margin-bottom: 8px;
+}
+
+.modal-card p {
+  font-size: 14px;
+  color: #8e8e93;
+  margin-bottom: 24px;
+}
+
+.pin-inputs {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.pin-digit {
+  width: 52px;
+  height: 64px;
+  background: #2c2c2e;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 16px;
+  font-size: 28px;
+  font-weight: 700;
+  color: #ffffff;
+  text-align: center;
+  outline: none;
+}
+
+.pin-digit:focus {
+  border-color: #007aff;
+}
