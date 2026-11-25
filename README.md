@@ -35,11 +35,14 @@ npx volremote pair
 # Rotate PIN and pairing credentials
 npx volremote pair --rotate
 
-# Install as macOS login LaunchAgent
-npx volremote service install
-
-# Uninstall LaunchAgent
-npx volremote service uninstall
+# Background Service Management (macOS LaunchAgent)
+npx volremote service install    # Install LaunchAgent (auto-starts on boot/login, pins to E-cores)
+npx volremote service status     # Check background service status, PID, RAM/CPU & health
+npx volremote service start      # Start the background service
+npx volremote service stop       # Stop the background service (stays stopped)
+npx volremote service restart    # Restart the background service
+npx volremote service logs       # View recent background service logs
+npx volremote service uninstall  # Completely remove LaunchAgent
 ```
 
 ## Architecture

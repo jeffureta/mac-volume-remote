@@ -47,4 +47,38 @@ describe("Audio Drivers Contract", () => {
       driver.destroy();
     }
   });
+
+  it("supervises and auto-respawns bridge on unexpected crash", async () => {
+    const binPath = path.resolve("bin/audio-bridge");
+    if (!fs.existsSync(binPath)) return;
+
+    const events: string[] = [];
+    const driver = new CoreAudioDriver({
+      bridgePath: binPath,
+      autoRestart: true,
+      restartBaseDelayMs: 50,
+      onBridgeEvent: (msg) => events.push(msg)
+    });
+
+    try {
+      const initial = await driver.getState();
+      expect(initial.outputDevice).toBeTruthy();
+
+      // Simulate unexpected bridge crash
+      const child = (driver as any).process;
+      expect(child).not.toBeNull();
+      child.kill("SIGKILL");
+
+      // Wait for backoff respawn
+      await new Promise(r => setTimeout(r, 200));
+
+      const recovered = await driver.getState();
+      expect(recovered.outputDevice).toBeTruthy();
+      expect((driver as any).process).not.toBeNull();
+      expect(events.some(e => e.includes("Bridge exited unexpectedly"))).toBe(true);
+      expect(events.some(e => e.includes("Bridge respawned successfully"))).toBe(true);
+    } finally {
+      driver.destroy();
+    }
+  });
 });

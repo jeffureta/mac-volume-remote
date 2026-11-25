@@ -88,4 +88,36 @@ describe("VolumeMemoryStore & CoreAudioDriver initial state", () => {
     });
     driver.destroy();
   });
+
+  it("coalesces rapid scheduleSave writes into a single disk write on timeout", async () => {
+    const store = new VolumeMemoryStore(statePath);
+    expect(store.hasPendingWrite()).toBe(false);
+
+    store.scheduleSave({ volume: 10, muted: false, outputDevice: "Speakers" }, 50);
+    store.scheduleSave({ volume: 20, muted: false, outputDevice: "Speakers" }, 50);
+    store.scheduleSave({ volume: 30, muted: false, outputDevice: "Speakers" }, 50);
+
+    expect(store.hasPendingWrite()).toBe(true);
+    // Before timer fires, disk file is still empty or non-existent
+    expect(store.load()).toBeNull();
+
+    // Wait for debounce timer to fire
+    await new Promise(r => setTimeout(r, 80));
+
+    expect(store.hasPendingWrite()).toBe(false);
+    expect(store.load()?.volume).toBe(30);
+  });
+
+  it("immediately writes latest state on flush() and cancels pending timer", () => {
+    const store = new VolumeMemoryStore(statePath);
+    store.scheduleSave({ volume: 88, muted: true, outputDevice: "AirPods" }, 500);
+
+    expect(store.hasPendingWrite()).toBe(true);
+    const saved = store.flush();
+
+    expect(saved).not.toBeNull();
+    expect(saved?.volume).toBe(88);
+    expect(store.hasPendingWrite()).toBe(false);
+    expect(store.load()?.volume).toBe(88);
+  });
 });
