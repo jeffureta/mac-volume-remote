@@ -82,4 +82,51 @@ describe("AppServer (HTTP pairing & WebSocket 2-way sync)", () => {
     expect((await audioDriver.getState()).volume).toBe(80);
     ws.close();
   });
+
+  it("returns 200 OK with health status on GET /api/health", async () => {
+    const res = await fetch(`http://127.0.0.1:${port}/api/health`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    expect(data.hostName).toBe("test-mac.local");
+    expect(data.assetsReady).toBe(true);
+  });
+
+  it("verifies session token on GET /api/auth/verify", async () => {
+    const creds = authService.getCredentials();
+    const validToken = creds.sessionTokens[0];
+
+    const resValid = await fetch(`http://127.0.0.1:${port}/api/auth/verify`, {
+      headers: { Authorization: `Bearer ${validToken}` }
+    });
+    expect(resValid.status).toBe(200);
+    const dataValid = await resValid.json();
+    expect(dataValid.valid).toBe(true);
+
+    const resInvalid = await fetch(`http://127.0.0.1:${port}/api/auth/verify`, {
+      headers: { Authorization: "Bearer bad-token" }
+    });
+    expect(resInvalid.status).toBe(401);
+    const dataInvalid = await resInvalid.json();
+    expect(dataInvalid.code).toBe("E_AUTH_EXPIRED");
+  });
+
+  it("returns 429 when POST /api/pair is rate limited", async () => {
+    for (let i = 0; i < 5; i++) {
+      await fetch(`http://127.0.0.1:${port}/api/pair`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pin: `000${i}` })
+      });
+    }
+
+    const resLimited = await fetch(`http://127.0.0.1:${port}/api/pair`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pin: "9999" })
+    });
+    expect(resLimited.status).toBe(429);
+    const data = await resLimited.json();
+    expect(data.code).toBe("E_PAIR_RATE_LIMITED");
+  });
 });

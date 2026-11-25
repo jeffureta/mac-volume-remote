@@ -26,7 +26,6 @@ describe("PairingAuthService", () => {
     expect(creds.sessionTokens.length).toBeGreaterThan(0);
 
     const stat = fs.statSync(configPath);
-    // mode 0600
     expect(stat.mode & 0o777).toBe(0o600);
   });
 
@@ -56,8 +55,28 @@ describe("PairingAuthService", () => {
     expect(auth.verifyPinAndIssueToken("0001", ip)).toBeNull();
     expect(auth.verifyPinAndIssueToken("0002", ip)).toBeNull();
 
-    // 4th attempt should be blocked even if PIN were correct
     const creds = auth.getCredentials();
     expect(auth.verifyPinAndIssueToken(creds.pin, ip)).toBeNull();
+  });
+
+  it("returns structured AuthResult with error codes for invalid PIN and rate limit", () => {
+    const auth = new PairingAuthService(configPath, { maxAttempts: 2, lockoutMs: 60000 });
+    const ip = "192.168.0.50";
+
+    const res1 = auth.authenticatePin("0000", ip);
+    expect(res1.ok).toBe(false);
+    if (!res1.ok) {
+      expect(res1.code).toBe("E_PAIR_INVALID_PIN");
+    }
+
+    const res2 = auth.authenticatePin("0001", ip);
+    expect(res2.ok).toBe(false);
+
+    const res3 = auth.authenticatePin("1234", ip);
+    expect(res3.ok).toBe(false);
+    if (!res3.ok) {
+      expect(res3.code).toBe("E_PAIR_RATE_LIMITED");
+      expect(res3.retryAfterSec).toBeGreaterThan(0);
+    }
   });
 });
