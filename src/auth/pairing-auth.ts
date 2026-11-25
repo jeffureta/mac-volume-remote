@@ -15,6 +15,15 @@ export interface PairingAuthOptions {
   lockoutMs?: number;
 }
 
+export type AuthResult =
+  | { ok: true; token: string }
+  | {
+      ok: false;
+      code: "E_PAIR_INVALID_PIN" | "E_PAIR_INVALID_BOOTSTRAP" | "E_PAIR_RATE_LIMITED";
+      error: string;
+      retryAfterSec?: number;
+    };
+
 export class PairingAuthService {
   private configPath: string;
   private creds: StoredCredentials;
@@ -48,9 +57,15 @@ export class PairingAuthService {
     return { ...this.creds };
   }
 
-  public verifyPinAndIssueToken(inputPin: string, clientIp: string): string | null {
-    if (this.isRateLimited(clientIp)) {
-      return null;
+  public authenticatePin(inputPin: string, clientIp: string): AuthResult {
+    const rateLimitCheck = this.checkRateLimit(clientIp);
+    if (rateLimitCheck.limited) {
+      return {
+        ok: false,
+        code: "E_PAIR_RATE_LIMITED",
+        error: `Too many failed pairing attempts. Please wait ${rateLimitCheck.retryAfterSec} seconds.`,
+        retryAfterSec: rateLimitCheck.retryAfterSec
+      };
     }
 
     if (this.safeCompare(inputPin, this.creds.pin)) {
@@ -58,16 +73,26 @@ export class PairingAuthService {
       const newToken = crypto.randomBytes(32).toString("hex");
       this.creds.sessionTokens.push(newToken);
       this.saveCredentials();
-      return newToken;
+      return { ok: true, token: newToken };
     }
 
     this.recordFailedAttempt(clientIp);
-    return null;
+    return {
+      ok: false,
+      code: "E_PAIR_INVALID_PIN",
+      error: "Incorrect 4-digit PIN. Please check the PIN printed in your Mac terminal."
+    };
   }
 
-  public verifyBootstrapAndIssueToken(inputBootstrap: string, clientIp: string): string | null {
-    if (this.isRateLimited(clientIp)) {
-      return null;
+  public authenticateBootstrap(inputBootstrap: string, clientIp: string): AuthResult {
+    const rateLimitCheck = this.checkRateLimit(clientIp);
+    if (rateLimitCheck.limited) {
+      return {
+        ok: false,
+        code: "E_PAIR_RATE_LIMITED",
+        error: `Too many failed pairing attempts. Please wait ${rateLimitCheck.retryAfterSec} seconds.`,
+        retryAfterSec: rateLimitCheck.retryAfterSec
+      };
     }
 
     if (this.safeCompare(inputBootstrap, this.creds.bootstrapToken)) {
@@ -75,11 +100,25 @@ export class PairingAuthService {
       const newToken = crypto.randomBytes(32).toString("hex");
       this.creds.sessionTokens.push(newToken);
       this.saveCredentials();
-      return newToken;
+      return { ok: true, token: newToken };
     }
 
     this.recordFailedAttempt(clientIp);
-    return null;
+    return {
+      ok: false,
+      code: "E_PAIR_INVALID_BOOTSTRAP",
+      error: "QR pairing token is invalid or expired. Scan a fresh QR code from your Mac terminal."
+    };
+  }
+
+  public verifyPinAndIssueToken(inputPin: string, clientIp: string): string | null {
+    const res = this.authenticatePin(inputPin, clientIp);
+    return res.ok ? res.token : null;
+  }
+
+  public verifyBootstrapAndIssueToken(inputBootstrap: string, clientIp: string): string | null {
+    const res = this.authenticateBootstrap(inputBootstrap, clientIp);
+    return res.ok ? res.token : null;
   }
 
   public validateSessionToken(token: string): boolean {
@@ -87,14 +126,19 @@ export class PairingAuthService {
     return this.creds.sessionTokens.some(savedToken => this.safeCompare(token, savedToken));
   }
 
-  private isRateLimited(ip: string): boolean {
+  private checkRateLimit(ip: string): { limited: boolean; retryAfterSec?: number } {
     const record = this.failedAttempts.get(ip);
-    if (!record) return false;
-    if (Date.now() - record.lastFailedAt > this.lockoutMs) {
+    if (!record) return { limited: false };
+    const elapsed = Date.now() - record.lastFailedAt;
+    if (elapsed > this.lockoutMs) {
       this.failedAttempts.delete(ip);
-      return false;
+      return { limited: false };
     }
-    return record.count >= this.maxAttempts;
+    if (record.count >= this.maxAttempts) {
+      const remainingMs = this.lockoutMs - elapsed;
+      return { limited: true, retryAfterSec: Math.max(1, Math.ceil(remainingMs / 1000)) };
+    }
+    return { limited: false };
   }
 
   private recordFailedAttempt(ip: string) {
@@ -129,7 +173,7 @@ export class PairingAuthService {
         }
       }
     } catch {
-      // Fall through to regenerate
+      // Regenerate
     }
 
     const pin = Math.floor(1000 + Math.random() * 9000).toString();

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { execSync } from "node:child_process";
+import { resolvePackagePath, PACKAGE_ROOT } from "../shared/paths.js";
 
 export interface LaunchdConfig {
   label: string;
@@ -9,17 +10,21 @@ export interface LaunchdConfig {
   cliScriptPath: string;
   port: number;
   logPath: string;
+  workingDir?: string;
 }
 
 export const DEFAULT_SERVICE_LABEL = "io.github.jeffureta.mac-volume-remote";
 
 export function generateLaunchdPlist(config: LaunchdConfig): string {
+  const workingDir = config.workingDir ?? PACKAGE_ROOT;
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
     <string>${config.label}</string>
+    <key>WorkingDirectory</key>
+    <string>${workingDir}</string>
     <key>ProgramArguments</key>
     <array>
         <string>${config.nodeBin}</string>
@@ -53,14 +58,15 @@ export function installLaunchAgent(port: number = 4818): string {
   }
 
   const nodeBin = process.execPath;
-  const cliScriptPath = path.resolve("dist/cli.js");
+  const cliScriptPath = resolvePackagePath("dist", "cli.js");
 
   const plistContent = generateLaunchdPlist({
     label,
     nodeBin,
     cliScriptPath,
     port,
-    logPath
+    logPath,
+    workingDir: PACKAGE_ROOT
   });
 
   fs.writeFileSync(plistPath, plistContent, "utf-8");
@@ -69,8 +75,7 @@ export function installLaunchAgent(port: number = 4818): string {
     const uid = process.getuid ? process.getuid() : 501;
     execSync(`launchctl bootout gui/${uid}/${label} 2>/dev/null || true`);
     execSync(`launchctl bootstrap gui/${uid} "${plistPath}"`);
-  } catch (err: any) {
-    // fallback to classic load
+  } catch {
     execSync(`launchctl unload "${plistPath}" 2>/dev/null || true`);
     execSync(`launchctl load "${plistPath}"`);
   }

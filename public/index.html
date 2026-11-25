@@ -12,13 +12,107 @@
   <title>Mac Volume Remote</title>
 </head>
 <body>
+  <!-- Layer 1: Inline Pre-Boot Error Fallback (works even if CSS or JS fails to load) -->
+  <div id="preBootErrorCard" style="display: none; position: fixed; inset: 0; background: #000; color: #fff; z-index: 9999; padding: 24px; font-family: -apple-system, sans-serif; box-sizing: border-box; overflow-y: auto;">
+    <div style="background: #1c1c1e; border: 1px solid #ff453a; border-radius: 20px; padding: 24px; max-width: 400px; margin: 40px auto; text-align: left;">
+      <h2 style="color: #ff453a; font-size: 20px; margin-bottom: 8px;">Startup Error</h2>
+      <p id="preBootErrorMessage" style="font-size: 14px; color: #d1d1d6; margin-bottom: 16px; word-break: break-word;">The remote application failed to load.</p>
+      <textarea id="preBootErrorText" readonly style="width: 100%; height: 140px; background: #000; color: #ff9f0a; border: 1px solid #333; border-radius: 12px; padding: 10px; font-family: monospace; font-size: 12px; box-sizing: border-box; user-select: text; -webkit-user-select: text; margin-bottom: 16px;"></textarea>
+      <div style="display: flex; gap: 8px;">
+        <button id="preBootCopyBtn" style="flex: 1; padding: 12px 0; background: #007aff; border: none; border-radius: 12px; color: #fff; font-weight: 600; font-size: 14px; cursor: pointer;">Copy Error</button>
+        <button onclick="window.location.reload()" style="flex: 1; padding: 12px 0; background: #2c2c2e; border: none; border-radius: 12px; color: #fff; font-weight: 600; font-size: 14px; cursor: pointer;">Reload</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function() {
+      window.__MVR_BOOTED__ = false;
+      window.__MVR_EARLY_ERRORS__ = [];
+
+      function showPreBootError(msg, err) {
+        var card = document.getElementById("preBootErrorCard");
+        var msgEl = document.getElementById("preBootErrorMessage");
+        var textEl = document.getElementById("preBootErrorText");
+        var copyBtn = document.getElementById("preBootCopyBtn");
+        if (!card || !msgEl || !textEl) return;
+
+        var details = (err && err.stack) ? err.stack : (err ? String(err) : "No stack trace available.");
+        var fullReport = "=== Mac Volume Remote Pre-Boot Error ===\n" +
+          "Message: " + msg + "\n" +
+          "URL:     " + window.location.href + "\n" +
+          "UA:      " + navigator.userAgent + "\n\n" +
+          details;
+
+        msgEl.textContent = msg;
+        textEl.value = fullReport;
+        card.style.display = "block";
+
+        if (copyBtn) {
+          copyBtn.onclick = function() {
+            try {
+              if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(fullReport);
+              } else {
+                textEl.select();
+                document.execCommand("copy");
+              }
+              copyBtn.textContent = "Copied!";
+              setTimeout(function() { copyBtn.textContent = "Copy Error"; }, 2000);
+            } catch (e) {
+              textEl.select();
+              copyBtn.textContent = "Selected (Press Copy)";
+            }
+          };
+        }
+      }
+
+      window.onerror = function(message, source, lineno, colno, error) {
+        window.__MVR_EARLY_ERRORS__.push({ message: message, source: source, lineno: lineno, error: error });
+        if (!window.__MVR_BOOTED__) {
+          showPreBootError("Script error during startup: " + message, error);
+        }
+      };
+
+      window.addEventListener("unhandledrejection", function(e) {
+        window.__MVR_EARLY_ERRORS__.push({ reason: e.reason });
+        if (!window.__MVR_BOOTED__) {
+          showPreBootError("Unhandled rejection during startup: " + (e.reason ? e.reason.message || e.reason : "unknown"), e.reason);
+        }
+      });
+
+      // 5-second boot watchdog
+      setTimeout(function() {
+        if (!window.__MVR_BOOTED__) {
+          showPreBootError("Application boot timeout (5s). The script bundle may be blocked or network disconnected.", null);
+        }
+      }, 5000);
+    })();
+  </script>
+
   <header>
-    <div class="status-pill">
+    <button id="statusPill" class="status-pill" type="button" aria-label="Connection Status">
       <div id="statusDot" class="status-dot"></div>
       <span id="hostLabel">Connecting...</span>
-    </div>
+    </button>
     <div id="deviceBadge" class="device-badge">Speakers</div>
   </header>
+
+  <!-- Inline Error Banner -->
+  <div id="errorBanner" class="error-banner" style="display: none;">
+    <div class="error-banner-content">
+      <div class="error-icon">⚠️</div>
+      <div class="error-text">
+        <div id="errorBannerTitle" class="error-title">Connection Error</div>
+        <div id="errorBannerMsg" class="error-message">Unable to reach Mac server.</div>
+      </div>
+    </div>
+    <div class="error-banner-actions">
+      <button id="errorCopyBtn" class="error-action-btn">Copy</button>
+      <button id="errorDetailsBtn" class="error-action-btn">Details</button>
+      <button id="errorDismissBtn" class="error-action-btn icon-btn">✕</button>
+    </div>
+  </div>
 
   <main>
     <div id="pillar" class="pillar-container">
@@ -48,10 +142,12 @@
     </div>
   </main>
 
+  <!-- Pairing Modal -->
   <div id="pairingModal" class="modal-overlay" style="display: none;">
     <div class="modal-card">
       <h2>Pair Your Mac</h2>
       <p>Enter the 4-digit PIN printed in your Mac's terminal:</p>
+      <div id="pairingInlineError" class="modal-error-text" style="display: none;"></div>
       <div class="pin-inputs">
         <input class="pin-digit" type="tel" maxlength="1" pattern="[0-9]*" inputmode="numeric">
         <input class="pin-digit" type="tel" maxlength="1" pattern="[0-9]*" inputmode="numeric">
@@ -59,9 +155,29 @@
         <input class="pin-digit" type="tel" maxlength="1" pattern="[0-9]*" inputmode="numeric">
       </div>
       <button id="submitPinBtn" style="width: 100%; background: #007aff;">Connect</button>
+      <button id="pairingHelpBtn" class="link-btn" style="margin-top: 16px; font-size: 13px; color: #8e8e93; background: none; box-shadow: none; padding: 4px;">Diagnostics & Troubleshooting</button>
     </div>
   </div>
 
-  <script type="module" src="/app.js"></script>
+  <!-- Diagnostics Sheet Modal -->
+  <div id="diagnosticsModal" class="modal-overlay" style="display: none;">
+    <div class="modal-card" style="max-width: 440px; text-align: left;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+        <h2 style="font-size: 18px; margin: 0;">Diagnostics & Logs</h2>
+        <button id="closeDiagnosticsBtn" class="icon-btn" style="background: none; box-shadow: none; font-size: 18px; color: #a1a1a6; padding: 4px;">✕</button>
+      </div>
+      <p style="font-size: 13px; color: #8e8e93; margin-bottom: 12px;">Copy this report to share in chat or troubleshooting:</p>
+      <textarea id="diagnosticsOutput" class="selectable-report" readonly></textarea>
+      <div class="btn-row" style="margin-top: 14px;">
+        <button id="copyDiagnosticsBtn" style="background: #007aff;">Copy Report</button>
+        <button id="probeHealthBtn" style="background: #2c2c2e;">Check Health</button>
+      </div>
+      <div style="margin-top: 10px; display: flex; justify-content: space-between;">
+        <button id="resetPairingBtn" class="link-btn" style="font-size: 12px; color: #ff453a; background: none; box-shadow: none; padding: 4px;">Clear Saved Token</button>
+      </div>
+    </div>
+  </div>
+
+  <script id="appScript" type="module" src="/app.js"></script>
 </body>
 </html>

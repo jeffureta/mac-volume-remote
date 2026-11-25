@@ -6,6 +6,7 @@ import { CoreAudioDriver } from "./audio/core-audio-driver.js";
 import { PairingAuthService } from "./auth/pairing-auth.js";
 import { getLanInfo } from "./network/lan-info.js";
 import { installLaunchAgent, uninstallLaunchAgent, DEFAULT_SERVICE_LABEL } from "./service/launchd.js";
+import { resolvePackagePath } from "./shared/paths.js";
 
 const args = process.argv.slice(2);
 const command = args[0] || "start";
@@ -18,13 +19,32 @@ function getPort(): number {
   return parseInt(process.env.PORT || "4818", 10);
 }
 
+function getHostOverride(): string | undefined {
+  const hostIdx = args.indexOf("--host");
+  if (hostIdx !== -1 && args[hostIdx + 1]) {
+    return args[hostIdx + 1];
+  }
+  return process.env.HOST;
+}
+
 const authService = new PairingAuthService();
 
-async function showPairingInstructions(port: number, creds: { pin: string; bootstrapToken: string }) {
-  const lan = getLanInfo(port, creds.bootstrapToken);
+async function showPairingInstructions(
+  port: number,
+  creds: { pin: string; bootstrapToken: string },
+  overrideHost?: string
+) {
+  const lan = getLanInfo(port, creds.bootstrapToken, { overrideHost });
   console.log("\n========================================================");
   console.log("             MAC VOLUME REMOTE - PAIRING");
   console.log("========================================================\n");
+  console.log(`  Target Interface: \x1b[36m${lan.selectedInterface}\x1b[0m (${lan.lanIp})`);
+
+  if (lan.vpnInterfaces && lan.vpnInterfaces.length > 0) {
+    console.log(`  \x1b[33mNotice: Active VPN/tunnel interface detected (${lan.vpnInterfaces.join(", ")}).\x1b[0m`);
+    console.log("  QR code uses physical Wi-Fi IP so your iPhone can reach it.\n");
+  }
+
   console.log("  Scan this QR code with your iPhone Camera to connect:\n");
 
   await new Promise<void>((resolve) => {
@@ -34,29 +54,31 @@ async function showPairingInstructions(port: number, creds: { pin: string; boots
     });
   });
 
-  console.log(`  Or open directly: ${lan.ipUrl} or ${lan.mDnsUrl}`);
-  console.log(`  4-Digit PIN:      \x1b[1m\x1b[32m${creds.pin}\x1b[0m\n`);
+  console.log(`  Or open in Safari: ${lan.ipUrl} or ${lan.mDnsUrl}`);
+  console.log(`  4-Digit PIN:       \x1b[1m\x1b[32m${creds.pin}\x1b[0m\n`);
   console.log("========================================================\n");
 }
 
 async function main() {
   const port = getPort();
+  const overrideHost = getHostOverride();
 
   if (command === "start") {
     const creds = authService.getCredentials();
-    const bridgePath = path.resolve("bin/audio-bridge");
+    const bridgePath = resolvePackagePath("bin", "audio-bridge");
     const audioDriver = new CoreAudioDriver({ bridgePath });
-    const lan = getLanInfo(port, creds.bootstrapToken);
+    const lan = getLanInfo(port, creds.bootstrapToken, { overrideHost });
 
     const server = new AppServer({
       authService,
       audioDriver,
       hostName: lan.localHostName,
-      port
+      port,
+      publicDir: resolvePackagePath("public")
     });
 
     const activePort = await server.start();
-    await showPairingInstructions(activePort, creds);
+    await showPairingInstructions(activePort, creds, overrideHost);
     console.log(`[Mac Volume Remote] Server listening on http://0.0.0.0:${activePort}`);
     console.log("Press Ctrl+C to stop.");
 
@@ -72,7 +94,7 @@ async function main() {
       creds = authService.rotateCredentials();
       console.log("Rotated PIN and tokens successfully.");
     }
-    await showPairingInstructions(port, creds);
+    await showPairingInstructions(port, creds, overrideHost);
   } else if (command === "service") {
     const sub = args[1];
     if (sub === "install") {
@@ -91,10 +113,10 @@ async function main() {
     }
   } else {
     console.log("Usage: volremote [start|pair|service]");
-    console.log("  volremote start [--port 4818]   Start the remote server");
-    console.log("  volremote pair [--rotate]       Display QR code and PIN");
-    console.log("  volremote service install       Install background LaunchAgent");
-    console.log("  volremote service uninstall     Uninstall background LaunchAgent");
+    console.log("  volremote start [--port 4818] [--host <ip>]   Start the remote server");
+    console.log("  volremote pair [--rotate] [--host <ip>]       Display QR code and PIN");
+    console.log("  volremote service install                     Install background LaunchAgent");
+    console.log("  volremote service uninstall                   Uninstall background LaunchAgent");
   }
 }
 

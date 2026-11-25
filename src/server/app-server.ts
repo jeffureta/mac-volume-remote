@@ -1,11 +1,11 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
-import url from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
 import { AudioDriver } from "../audio/audio-driver.js";
-import { PairingAuthService } from "../auth/pairing-auth.js";
+import { PairingAuthService, AuthResult } from "../auth/pairing-auth.js";
 import { parseClientCommand, ServerMessage, AudioState } from "../shared/protocol.js";
+import { resolvePackagePath } from "../shared/paths.js";
 
 export interface AppServerOptions {
   authService: PairingAuthService;
@@ -25,13 +25,14 @@ export class AppServer {
   private wss: WebSocketServer | null = null;
   private connectedSockets: Set<WebSocket> = new Set();
   private unsubscribeDriver?: () => void;
+  private startTime: number = Date.now();
 
   constructor(options: AppServerOptions) {
     this.authService = options.authService;
     this.audioDriver = options.audioDriver;
     this.hostName = options.hostName;
     this.port = options.port ?? 4818;
-    this.publicDir = options.publicDir ?? path.resolve("public");
+    this.publicDir = options.publicDir ?? resolvePackagePath("public");
   }
 
   public async start(): Promise<number> {
@@ -57,7 +58,6 @@ export class AppServer {
       this.wss.on("connection", (ws: WebSocket) => {
         this.connectedSockets.add(ws);
 
-        // Push initial state
         this.audioDriver.getState().then((state) => {
           this.sendToSocket(ws, { type: "state", state, hostName: this.hostName });
         });
@@ -88,7 +88,7 @@ export class AppServer {
                 break;
             }
           } catch {
-            // ignore malformed ws messages
+            // ignore
           }
         });
 
@@ -143,7 +143,6 @@ export class AppServer {
     const parsedUrl = new URL(req.url || "/", `http://${req.headers.host}`);
     const clientIp = (req.socket.remoteAddress || "").replace(/^::ffff:/, "");
 
-    // CORS & PWA headers
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
@@ -154,37 +153,84 @@ export class AppServer {
       return;
     }
 
+    // Health endpoint (unauthenticated)
+    if (req.method === "GET" && parsedUrl.pathname === "/api/health") {
+      const indexHtmlPath = path.join(this.publicDir, "index.html");
+      const appJsPath = path.join(this.publicDir, "app.js");
+      const assetsReady = fs.existsSync(indexHtmlPath) && fs.existsSync(appJsPath);
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        ok: true,
+        hostName: this.hostName,
+        uptimeSec: Math.floor((Date.now() - this.startTime) / 1000),
+        assetsReady
+      }));
+      return;
+    }
+
+    // Auth verify endpoint
+    if (req.method === "GET" && parsedUrl.pathname === "/api/auth/verify") {
+      let token = parsedUrl.searchParams.get("token") || "";
+      const authHeader = req.headers.authorization;
+      if (authHeader && authHeader.startsWith("Bearer ")) {
+        token = authHeader.substring(7).trim();
+      }
+
+      if (token && this.authService.validateSessionToken(token)) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ valid: true, hostName: this.hostName }));
+      } else {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          valid: false,
+          code: "E_AUTH_EXPIRED",
+          error: "Session token expired or revoked. Please re-enter the 4-digit PIN."
+        }));
+      }
+      return;
+    }
+
+    // Pairing endpoint
     if (req.method === "POST" && parsedUrl.pathname === "/api/pair") {
       let body = "";
       req.on("data", chunk => (body += chunk));
       req.on("end", () => {
         try {
           const json = JSON.parse(body || "{}");
-          let token: string | null = null;
+          let authResult: AuthResult | null = null;
 
           if (json.pin) {
-            token = this.authService.verifyPinAndIssueToken(String(json.pin), clientIp);
+            authResult = this.authService.authenticatePin(String(json.pin), clientIp);
           } else if (json.bootstrapToken) {
-            token = this.authService.verifyBootstrapAndIssueToken(String(json.bootstrapToken), clientIp);
-          }
-
-          if (!token) {
-            res.writeHead(401, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "Invalid credentials or rate limited" }));
+            authResult = this.authService.authenticateBootstrap(String(json.bootstrapToken), clientIp);
+          } else {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ code: "E_BAD_REQUEST", error: "Missing pin or bootstrapToken." }));
             return;
           }
 
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ token, hostName: this.hostName }));
+          if (authResult.ok) {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ token: authResult.token, hostName: this.hostName }));
+          } else {
+            const statusCode = authResult.code === "E_PAIR_RATE_LIMITED" ? 429 : 401;
+            res.writeHead(statusCode, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({
+              code: authResult.code,
+              error: authResult.error,
+              retryAfterSec: authResult.retryAfterSec
+            }));
+          }
         } catch {
           res.writeHead(400, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "Invalid JSON" }));
+          res.end(JSON.stringify({ code: "E_BAD_JSON", error: "Invalid JSON payload." }));
         }
       });
       return;
     }
 
-    // Static Assets serving
+    // Static assets
     if (req.method === "GET") {
       let filePath = parsedUrl.pathname === "/" ? "/index.html" : parsedUrl.pathname;
       const safePath = path.normalize(path.join(this.publicDir, filePath));
@@ -200,6 +246,21 @@ export class AppServer {
         };
         res.writeHead(200, { "Content-Type": mimeTypes[ext] || "application/octet-stream" });
         fs.createReadStream(safePath).pipe(res);
+        return;
+      }
+
+      if (parsedUrl.pathname === "/") {
+        // Missing index.html fallback
+        res.writeHead(503, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(`<!DOCTYPE html>
+<html>
+<head><title>Mac Volume Remote - Assets Missing</title></head>
+<body style="font-family: -apple-system, sans-serif; background: #000; color: #fff; padding: 32px; text-align: center;">
+  <h2>Web Assets Missing</h2>
+  <p>The client build assets were not found in <code>${this.publicDir}</code>.</p>
+  <p>Please run <code>npm run build</code> on your Mac and reload.</p>
+</body>
+</html>`);
         return;
       }
     }
