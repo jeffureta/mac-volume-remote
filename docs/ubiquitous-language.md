@@ -15,3 +15,9 @@
 - **PersistedVolumeState**: `AudioState` snapshot augmented with an ISO 8601 `updatedAt` timestamp.
 - **StateSyncEndpoint**: Authenticated `GET /api/state` (`Cache-Control: no-store`) endpoint used by mobile clients on boot and app wake to immediately pull authoritative volume state.
 - **HomeScreenIcon**: Opaque PNG icon assets (`apple-touch-icon.png` `180×180`, `icon-192.png`, `icon-512.png`) and `"Mac Volume"` manifest metadata for iOS Safari Add to Home Screen.
+- **BackgroundService**: macOS user `LaunchAgent` (`~/Library/LaunchAgents/io.github.jeffureta.mac-volume-remote.plist`) registered in the user's `Aqua` GUI session to auto-start the server on login and restart only on unexpected failure.
+- **EfficiencyProfile**: macOS runtime and process configuration targeting Apple Silicon Efficiency (E) cores via `ProcessType=Background`, `Nice=10`, `LowPriorityIO=true`, and V8 heap limits (`--max-old-space-size=64`).
+- **DaemonMode**: Headless operational mode (`--daemon`) suppressing ANSI interactive banners, routing logs to bounded files with rotation, and minimizing console I/O.
+- **ServiceStatus**: Structured diagnostic snapshot of the LaunchAgent state, runtime PID, live CPU/memory metrics, and listening port.
+- **BridgeSupervisor**: Supervisory wrapper within `CoreAudioDriver` managing child `audio-bridge` process lifecycles, exit recovery, and exponential backoff respawning.
+- **CoalescedVolumePersistence**: Trailing-edge debounced synchronization (default 250ms) of volume state changes to `volume-state.json` to reduce SSD write cycles while ensuring clean flush upon process shutdown.

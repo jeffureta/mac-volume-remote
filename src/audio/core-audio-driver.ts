@@ -8,14 +8,30 @@ import { AudioState, VolumePercent, clampVolume } from "../shared/protocol.js";
 export interface CoreAudioDriverOptions {
   bridgePath?: string;
   initialState?: Partial<AudioState>;
+  autoRestart?: boolean;
+  restartBaseDelayMs?: number;
+  restartMaxDelayMs?: number;
+  maxRestartAttempts?: number;
+  onBridgeEvent?: (message: string) => void;
 }
 
 export class CoreAudioDriver implements AudioDriver {
   private bridgePath: string;
   private process: ChildProcessWithoutNullStreams | null = null;
+  private rl: readline.Interface | null = null;
   private currentState: AudioState;
   private listeners: Set<AudioStateListener> = new Set();
   private pendingResolvers: Array<(state: AudioState) => void> = [];
+  
+  private autoRestart: boolean;
+  private restartBaseDelayMs: number;
+  private restartMaxDelayMs: number;
+  private maxRestartAttempts: number;
+  private onBridgeEvent?: (message: string) => void;
+  
+  private restartAttempts: number = 0;
+  private restartTimer: NodeJS.Timeout | null = null;
+  private destroyed: boolean = false;
 
   constructor(options: CoreAudioDriverOptions = {}) {
     this.bridgePath = options.bridgePath ?? path.resolve("bin/audio-bridge");
@@ -24,25 +40,47 @@ export class CoreAudioDriver implements AudioDriver {
       muted: Boolean(options.initialState?.muted ?? false),
       outputDevice: String(options.initialState?.outputDevice || "macOS Audio")
     };
+    this.autoRestart = options.autoRestart ?? true;
+    this.restartBaseDelayMs = options.restartBaseDelayMs ?? 250;
+    this.restartMaxDelayMs = options.restartMaxDelayMs ?? 10_000;
+    this.maxRestartAttempts = options.maxRestartAttempts ?? 10;
+    this.onBridgeEvent = options.onBridgeEvent;
+
     this.spawnBridge();
   }
 
+  private logEvent(message: string) {
+    this.onBridgeEvent?.(message);
+  }
+
   private spawnBridge() {
+    if (this.destroyed) return;
     if (!fs.existsSync(this.bridgePath)) {
+      this.logEvent(`Bridge binary not found at ${this.bridgePath}`);
       return;
     }
 
-    this.process = spawn(this.bridgePath, [], { stdio: ["pipe", "pipe", "pipe"] });
+    try {
+      this.process = spawn(this.bridgePath, [], { stdio: ["pipe", "pipe", "pipe"] });
+    } catch (err: any) {
+      this.logEvent(`Failed to spawn bridge: ${err.message}`);
+      this.scheduleRestart();
+      return;
+    }
 
-    const rl = readline.createInterface({
+    this.rl = readline.createInterface({
       input: this.process.stdout,
       terminal: false
     });
 
-    rl.on("line", (line: string) => {
+    this.rl.on("line", (line: string) => {
       try {
         const parsed = JSON.parse(line.trim());
         if (parsed.type === "state") {
+          if (this.restartAttempts > 0) {
+            this.logEvent("Bridge respawned successfully and synchronized state.");
+            this.restartAttempts = 0;
+          }
           this.currentState = {
             volume: clampVolume(parsed.volume),
             muted: Boolean(parsed.muted),
@@ -59,14 +97,62 @@ export class CoreAudioDriver implements AudioDriver {
       }
     });
 
-    this.process.on("exit", () => {
-      this.process = null;
+    this.process.on("exit", (code, signal) => {
+      this.cleanupChild();
+      if (!this.destroyed) {
+        this.logEvent(`Bridge exited unexpectedly (code=${code}, signal=${signal}).`);
+        this.flushPendingResolvers();
+        if (this.autoRestart) {
+          this.scheduleRestart();
+        }
+      }
     });
+  }
+
+  private cleanupChild() {
+    if (this.rl) {
+      try { this.rl.close(); } catch {}
+      this.rl = null;
+    }
+    this.process = null;
+  }
+
+  private scheduleRestart() {
+    if (this.destroyed || this.restartTimer) return;
+    if (this.restartAttempts >= this.maxRestartAttempts) {
+      this.logEvent(`Max restart attempts (${this.maxRestartAttempts}) reached for bridge.`);
+      return;
+    }
+
+    const delay = Math.min(
+      this.restartBaseDelayMs * Math.pow(2, this.restartAttempts),
+      this.restartMaxDelayMs
+    );
+    this.restartAttempts++;
+    this.logEvent(`Scheduling bridge restart attempt ${this.restartAttempts} in ${delay}ms`);
+
+    this.restartTimer = setTimeout(() => {
+      this.restartTimer = null;
+      if (!this.destroyed) {
+        this.spawnBridge();
+      }
+    }, delay);
+  }
+
+  private flushPendingResolvers() {
+    while (this.pendingResolvers.length > 0) {
+      const resolver = this.pendingResolvers.shift();
+      resolver?.({ ...this.currentState });
+    }
   }
 
   private sendCommand(cmd: object) {
     if (this.process && this.process.stdin.writable) {
-      this.process.stdin.write(JSON.stringify(cmd) + "\n");
+      try {
+        this.process.stdin.write(JSON.stringify(cmd) + "\n");
+      } catch {
+        // Child pipe broken
+      }
     }
   }
 
@@ -124,10 +210,18 @@ export class CoreAudioDriver implements AudioDriver {
   }
 
   destroy(): void {
+    this.destroyed = true;
+    if (this.restartTimer) {
+      clearTimeout(this.restartTimer);
+      this.restartTimer = null;
+    }
     this.listeners.clear();
+    this.flushPendingResolvers();
     if (this.process) {
-      this.process.kill("SIGTERM");
-      this.process = null;
+      try {
+        this.process.kill("SIGTERM");
+      } catch {}
+      this.cleanupChild();
     }
   }
 

@@ -13,15 +13,21 @@ struct AudioPayload: Codable {
 final class CoreAudioController {
     static let shared = CoreAudioController()
     
-    private var defaultOutputDeviceID: AudioDeviceID = 0
+    private var defaultOutputDeviceID: AudioDeviceID = AudioObjectID(kAudioObjectUnknown)
+    private var boundDeviceID: AudioDeviceID = AudioObjectID(kAudioObjectUnknown)
     private var isListening = false
+    
+    private var defaultDeviceListenerBlock: AudioObjectPropertyListenerBlock?
+    private var systemRestartListenerBlock: AudioObjectPropertyListenerBlock?
+    private var volumeListenerBlock: AudioObjectPropertyListenerBlock?
+    private var muteListenerBlock: AudioObjectPropertyListenerBlock?
     
     private init() {
         refreshDefaultDevice()
     }
     
     func refreshDefaultDevice() {
-        var deviceID = AudioDeviceID(0)
+        var deviceID = AudioDeviceID(kAudioObjectUnknown)
         var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
         var propertyAddress = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDefaultOutputDevice,
@@ -40,10 +46,15 @@ final class CoreAudioController {
         
         if status == noErr {
             self.defaultOutputDeviceID = deviceID
+        } else {
+            self.defaultOutputDeviceID = AudioObjectID(kAudioObjectUnknown)
         }
     }
     
     func getDeviceName() -> String {
+        guard defaultOutputDeviceID != kAudioObjectUnknown else {
+            return "No Output Device"
+        }
         var propertyAddress = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyDeviceNameCFString,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -70,6 +81,9 @@ final class CoreAudioController {
     }
     
     func getVolume() -> Int {
+        guard defaultOutputDeviceID != kAudioObjectUnknown else {
+            return 0
+        }
         var volume: Float32 = 0.0
         var propertySize = UInt32(MemoryLayout<Float32>.size)
         var propertyAddress = AudioObjectPropertyAddress(
@@ -94,6 +108,7 @@ final class CoreAudioController {
     }
     
     func setVolume(_ volumePercent: Int) {
+        guard defaultOutputDeviceID != kAudioObjectUnknown else { return }
         var volume = Float32(max(0, min(100, volumePercent))) / 100.0
         let propertySize = UInt32(MemoryLayout<Float32>.size)
         var propertyAddress = AudioObjectPropertyAddress(
@@ -113,6 +128,7 @@ final class CoreAudioController {
     }
     
     func isMuted() -> Bool {
+        guard defaultOutputDeviceID != kAudioObjectUnknown else { return false }
         var muted: UInt32 = 0
         var propertySize = UInt32(MemoryLayout<UInt32>.size)
         var propertyAddress = AudioObjectPropertyAddress(
@@ -137,6 +153,7 @@ final class CoreAudioController {
     }
     
     func setMuted(_ mute: Bool) {
+        guard defaultOutputDeviceID != kAudioObjectUnknown else { return }
         var muted: UInt32 = mute ? 1 : 0
         let propertySize = UInt32(MemoryLayout<UInt32>.size)
         var propertyAddress = AudioObjectPropertyAddress(
@@ -176,42 +193,109 @@ final class CoreAudioController {
         guard !isListening else { return }
         isListening = true
         
-        // Listen to default device changes
+        // Listen to default output device changes
         var defaultDeviceAddress = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDefaultOutputDevice,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
         
-        AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &defaultDeviceAddress, DispatchQueue.main) { _, _ in
-            CoreAudioController.shared.refreshDefaultDevice()
-            CoreAudioController.shared.bindDeviceListeners()
-            CoreAudioController.shared.emitState()
+        let devBlock: AudioObjectPropertyListenerBlock = { _, _ in
+            DispatchQueue.main.async {
+                CoreAudioController.shared.refreshDefaultDevice()
+                CoreAudioController.shared.bindDeviceListeners()
+                CoreAudioController.shared.emitState()
+            }
         }
+        self.defaultDeviceListenerBlock = devBlock
+        AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject),
+            &defaultDeviceAddress,
+            DispatchQueue.main,
+            devBlock
+        )
+        
+        // Listen to coreaudiod daemon restarts
+        var restartAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyServiceRestarted,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let restartBlock: AudioObjectPropertyListenerBlock = { _, _ in
+            DispatchQueue.main.async {
+                CoreAudioController.shared.refreshDefaultDevice()
+                CoreAudioController.shared.bindDeviceListeners()
+                CoreAudioController.shared.emitState()
+            }
+        }
+        self.systemRestartListenerBlock = restartBlock
+        AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject),
+            &restartAddress,
+            DispatchQueue.main,
+            restartBlock
+        )
         
         bindDeviceListeners()
     }
     
-    private func bindDeviceListeners() {
+    private func unbindDeviceListeners() {
+        guard boundDeviceID != kAudioObjectUnknown else { return }
+        
         var volumeAddress = AudioObjectPropertyAddress(
             mSelector: kAudioHardwareServiceDeviceProperty_VirtualMainVolume,
             mScope: kAudioObjectPropertyScopeOutput,
             mElement: kAudioObjectPropertyElementMain
         )
+        if let block = volumeListenerBlock {
+            AudioObjectRemovePropertyListenerBlock(boundDeviceID, &volumeAddress, DispatchQueue.main, block)
+            volumeListenerBlock = nil
+        }
         
         var muteAddress = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyMute,
             mScope: kAudioObjectPropertyScopeOutput,
             mElement: kAudioObjectPropertyElementMain
         )
-        
-        AudioObjectAddPropertyListenerBlock(defaultOutputDeviceID, &volumeAddress, DispatchQueue.main) { _, _ in
-            CoreAudioController.shared.emitState()
+        if let block = muteListenerBlock {
+            AudioObjectRemovePropertyListenerBlock(boundDeviceID, &muteAddress, DispatchQueue.main, block)
+            muteListenerBlock = nil
         }
         
-        AudioObjectAddPropertyListenerBlock(defaultOutputDeviceID, &muteAddress, DispatchQueue.main) { _, _ in
-            CoreAudioController.shared.emitState()
+        boundDeviceID = AudioObjectID(kAudioObjectUnknown)
+    }
+    
+    private func bindDeviceListeners() {
+        unbindDeviceListeners()
+        
+        guard defaultOutputDeviceID != kAudioObjectUnknown else { return }
+        boundDeviceID = defaultOutputDeviceID
+        
+        var volumeAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwareServiceDeviceProperty_VirtualMainVolume,
+            mScope: kAudioObjectPropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let volBlock: AudioObjectPropertyListenerBlock = { _, _ in
+            DispatchQueue.main.async {
+                CoreAudioController.shared.emitState()
+            }
         }
+        self.volumeListenerBlock = volBlock
+        AudioObjectAddPropertyListenerBlock(boundDeviceID, &volumeAddress, DispatchQueue.main, volBlock)
+        
+        var muteAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyMute,
+            mScope: kAudioObjectPropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let muteBlock: AudioObjectPropertyListenerBlock = { _, _ in
+            DispatchQueue.main.async {
+                CoreAudioController.shared.emitState()
+            }
+        }
+        self.muteListenerBlock = muteBlock
+        AudioObjectAddPropertyListenerBlock(boundDeviceID, &muteAddress, DispatchQueue.main, muteBlock)
     }
 }
 
@@ -225,11 +309,10 @@ if args.contains("--get") {
 CoreAudioController.shared.startObserving()
 CoreAudioController.shared.emitState()
 
-// Read stdin NDJSON commands asynchronously
-let inputPipe = Pipe()
+// Read stdin NDJSON commands asynchronously using utility QoS
 let stdIn = FileHandle.standardInput
 
-DispatchQueue.global(qos: .userInitiated).async {
+DispatchQueue.global(qos: .utility).async {
     while true {
         let data = stdIn.availableData
         guard !data.isEmpty else {

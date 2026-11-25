@@ -15,6 +15,7 @@ export interface AppServerOptions {
   hostName: string;
   port?: number;
   publicDir?: string;
+  persistDebounceMs?: number;
 }
 
 export class AppServer {
@@ -24,6 +25,7 @@ export class AppServer {
   private hostName: string;
   private port: number;
   private publicDir: string;
+  private persistDebounceMs: number;
   private httpServer: http.Server | null = null;
   private wss: WebSocketServer | null = null;
   private connectedSockets: Set<WebSocket> = new Set();
@@ -38,6 +40,7 @@ export class AppServer {
     this.hostName = options.hostName;
     this.port = options.port ?? 4818;
     this.publicDir = options.publicDir ?? resolvePackagePath("public");
+    this.persistDebounceMs = options.persistDebounceMs ?? 0;
   }
 
   public async start(): Promise<number> {
@@ -131,8 +134,12 @@ export class AppServer {
 
   public async stop(): Promise<void> {
     this.unsubscribeDriver?.();
+    this.volumeMemoryStore?.flush();
+
     for (const ws of this.connectedSockets) {
-      ws.close();
+      try {
+        ws.terminate();
+      } catch {}
     }
     this.connectedSockets.clear();
 
@@ -146,6 +153,10 @@ export class AppServer {
 
     await new Promise<void>((resolve) => {
       if (this.httpServer) {
+        try {
+          (this.httpServer as any).closeIdleConnections?.();
+          (this.httpServer as any).closeAllConnections?.();
+        } catch {}
         this.httpServer.close(() => resolve());
       } else {
         resolve();
@@ -337,7 +348,9 @@ export class AppServer {
 
   private persistState(state: AudioState) {
     if (this.volumeMemoryStore) {
-      const saved = this.volumeMemoryStore.save(state);
+      const saved = this.persistDebounceMs > 0
+        ? this.volumeMemoryStore.scheduleSave(state, this.persistDebounceMs)
+        : this.volumeMemoryStore.save(state);
       this.lastKnownUpdatedAt = saved.updatedAt;
     } else {
       this.lastKnownUpdatedAt = new Date().toISOString();
